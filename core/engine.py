@@ -10,12 +10,14 @@ from .edges import build_graph
 from .nodes import router_node, planner_node, executor_node, critical_node
 from langchain_core.tools import BaseTool
 from core import config as core_config
+from core.observability.tracing import get_tracer
 
 
 class Engine:
     """Engine that wires models, tools, and the graph, and exposes a run() method."""
 
     def __init__(self, tools: Optional[List[BaseTool]] = None):
+        self._tracer = get_tracer(core_config.TRACE_LOG_FILE)
         # Initialize models using singleton core.config
         self._models = Models(core_config)
         self._router_llm = self._models.getRouterModel()
@@ -33,7 +35,6 @@ class Engine:
                 if self._tools:
                     setattr(self, attr, llm.bind_tools(self._tools))
             except AttributeError:
-                # If underlying model doesn't support bind_tools, ignore binding
                 pass
 
         # Build graph with closures capturing LLMs and tools
@@ -46,6 +47,8 @@ class Engine:
             }
         )
 
+        self._tracer.log("engine_init", tools_count=len(self._tools))
+
     def run(self, user_input: str, history: Optional[List[AnyMessage]] = None) -> Dict[str, List[AnyMessage]]:
         """Run the agent graph once for a given user input and return updated messages.
 
@@ -56,5 +59,7 @@ class Engine:
             A dict with key "messages" containing the updated list of messages.
         """
         messages: List[AnyMessage] = list(history or []) + [HumanMessage(content=user_input)]
+        self._tracer.log("run_start", input_len=len(user_input), history_len=len(history or []))
         result = self.app.invoke({"messages": messages})
+        self._tracer.log("run_end", messages_len=len(result.get("messages", [])))
         return result

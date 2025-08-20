@@ -25,3 +25,5 @@ class Config:
     PLANNER_SYSTEM_PROMPT = os.getenv("PLANNER_SYSTEM_PROMPT")
     EXECUTOR_SYSTEM_PROMPT = os.getenv("EXECUTOR_SYSTEM_PROMPT")
     CRITIC_SYSTEM_PROMPT = os.getenv("CRITIC_SYSTEM_PROMPT")
+    # Tracing
+    TRACE_LOG_FILE = os.getenv("TRACE_LOG_FILE") or "aurora_trace.log"
