@@ -7,6 +7,8 @@ from langchain_core.messages import AIMessage, AnyMessage
 
 from core.engine import Engine
 from CurrentTimeTools.Tools import getCurrentTime
+from WebSearchTools import ddg_html_search, ddg_html_search_enrich, visit_website, crawl_website
+from WriteFileTools import create_file, write_file, replace_in_file
 
 
 def _last_ai_text(messages: List[AnyMessage]) -> str:
@@ -20,14 +22,23 @@ def main():
     print("Start")
 
     # Initialize engine with tools
-    tools = [getCurrentTime]
+    tools = [
+        getCurrentTime,
+        ddg_html_search,
+        ddg_html_search_enrich,
+        visit_website,
+        crawl_website,
+        create_file,
+        write_file,
+        replace_in_file,
+    ]
     engine = Engine(tools=tools)
 
     history: List[AnyMessage] = []
 
     while True:
         try:
-            q = input("\nYou> ").strip()
+            q = input("\nYou> \n").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nbye.")
             break
@@ -40,9 +51,8 @@ def main():
         # Run the agent once and update history
         result = engine.run(q, history=history)
         history = result.get("messages", history)
-        print(f"Assistant> {_last_ai_text(history)}")
+        print(f"Assistant> {_last_ai_text(history)}\n")
 
 
 if __name__ == "__main__":
     main()
-
