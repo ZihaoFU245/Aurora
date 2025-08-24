@@ -4,7 +4,7 @@ Write file tools for agents
 from langchain_core.tools import tool
 from pathlib import Path
 import re
-from typing import Dict
+from typing import Dict, Optional
 
 
 def _ensure_parent(path: Path):
@@ -56,6 +56,41 @@ def write_file(path: str, content: str, mode: str = "w", encoding: str = "utf-8"
         with p.open("a", encoding=encoding, newline="") as f:
             f.write(content)
     return {"ok": True, "path": str(p), "bytes": len(data), "mode": mode}
+
+
+@tool
+def read_file(path: str, encoding: str = "utf-8", max_bytes: Optional[int] = None) -> Dict:
+    """Read text from a file.
+
+    Inputs:
+    - path: file path to read
+    - encoding: text encoding (default utf-8)
+    - max_bytes: if provided, limit bytes read; returns truncated=True if file exceeds this size
+    Returns: dict {ok, path, bytes, content, truncated, size}
+    """
+    p = Path(path)
+    if not p.exists():
+        return {"ok": False, "error": "file not found", "path": str(p)}
+
+    size = p.stat().st_size
+    truncated = False
+
+    if max_bytes is None:
+        # Full read as text
+        text = p.read_text(encoding=encoding)
+        return {"ok": True, "path": str(p), "bytes": size, "content": text, "truncated": False, "size": size}
+
+    if max_bytes < 0:
+        return {"ok": False, "error": "max_bytes must be non-negative", "path": str(p)}
+
+    # Partial read in binary then decode safely
+    with p.open("rb") as f:
+        data = f.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        truncated = True
+        data = data[:max_bytes]
+    text = data.decode(encoding, errors="replace")
+    return {"ok": True, "path": str(p), "bytes": len(data), "content": text, "truncated": truncated, "size": size}
 
 
 @tool

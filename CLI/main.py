@@ -8,7 +8,8 @@ from langchain_core.messages import AIMessage, AnyMessage
 from core.engine import Engine
 from CurrentTimeTools.Tools import getCurrentTime
 from WebSearchTools import ddg_html_search, ddg_html_search_enrich, visit_website, crawl_website
-from WriteFileTools import create_file, write_file, replace_in_file
+from WriteFileTools import create_file, write_file, replace_in_file, read_file
+
 
 
 def _last_ai_text(messages: List[AnyMessage]) -> str:
@@ -31,6 +32,7 @@ def main():
         create_file,
         write_file,
         replace_in_file,
+        read_file,
     ]
     engine = Engine(tools=tools)
 
@@ -38,7 +40,7 @@ def main():
 
     while True:
         try:
-            q = input("\nYou> \n").strip()
+            q = input("\nYou> ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nbye.")
             break
