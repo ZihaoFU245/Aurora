@@ -11,7 +11,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    AnyMessage,
+    HumanMessage,
+    ToolMessage,
+    SystemMessage,
+)
 
 from core.engine import Engine
 from CurrentTimeTools.Tools import getCurrentTime
@@ -150,7 +156,12 @@ def deserialize_history(history_data: List[Dict[str, Any]]) -> List[AnyMessage]:
             messages.append(HumanMessage(content=content))
         elif msg_type == "ai":
             messages.append(AIMessage(content=content))
-        # extend for other types if needed
+        elif msg_type == "tool":
+            messages.append(
+                ToolMessage(content=content, tool_call_id=msg_data.get("tool_call_id", ""))
+            )
+        elif msg_type == "system":
+            messages.append(SystemMessage(content=content))
     return messages
 
 def serialize_history(history: List[AnyMessage]) -> List[Dict[str, Any]]:
@@ -159,7 +170,17 @@ def serialize_history(history: List[AnyMessage]) -> List[Dict[str, Any]]:
         try:
             serialized.append(msg.dict())
         except Exception:
-            serialized.append({"type": getattr(msg, "type", msg.__class__.__name__.lower()), "content": getattr(msg, "content", "")})
+            serialized.append(
+                {
+                    "type": getattr(msg, "type", msg.__class__.__name__.lower()),
+                    "content": getattr(msg, "content", ""),
+                    **(
+                        {"tool_call_id": getattr(msg, "tool_call_id")}
+                        if hasattr(msg, "tool_call_id")
+                        else {}
+                    ),
+                }
+            )
     return serialized
 
 
