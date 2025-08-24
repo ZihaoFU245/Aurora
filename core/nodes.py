@@ -17,7 +17,14 @@ import asyncio
 
 
 def _execute_tool_calls(ai_msg: AIMessage, tools_map: Dict[str, BaseTool]) -> List[ToolMessage]:
-    """Execute tool calls from an AI message and return ToolMessage list."""
+    """Execute tool calls from an AI message and return ToolMessage list.
+
+    Implementation detail: use the synchronous tool.invoke() API to avoid mixing
+    event loops inside FastAPI (previously using asyncio.run on tool.ainvoke()
+    caused 'coroutine was never awaited' warnings when already in a running loop).
+    If a tool is async-only and raises, attempt a best-effort execution in a
+    background thread running a temporary loop.
+    """
     tracer = get_tracer()
     results: List[ToolMessage] = []
     for call in getattr(ai_msg, "tool_calls", []) or []:
@@ -32,12 +39,40 @@ def _execute_tool_calls(ai_msg: AIMessage, tools_map: Dict[str, BaseTool]) -> Li
             results.append(ToolMessage(content=msg, tool_call_id=call_id))
             continue
         try:
-            # Prefer async invocation to support async-only structured tools
-            output = asyncio.run(tool.ainvoke(args))
+            # Primary path: synchronous invoke (LangChain wraps async internally if available)
+            output = tool.invoke(args)
+            # If an async coroutine slips through (shouldn't), resolve it safely
+            if asyncio.iscoroutine(output):  # type: ignore
+                try:
+                    loop = asyncio.get_running_loop()
+                    # Schedule and wait for completion
+                    output = loop.run_until_complete(output)  # pragma: no cover (unlikely)
+                except RuntimeError:
+                    # No running loop, create one
+                    output = asyncio.run(output)
             tracer.log("tool_call_end", tool=name, tool_call_id=call_id)
         except Exception as e:
-            output = f"Tool '{name}' error: {e}"
-            tracer.log("tool_call_error", tool=name, tool_call_id=call_id, error=str(e))
+            # Fallback attempt for async-only tools
+            try:
+                coro = getattr(tool, "ainvoke")(args)
+                if asyncio.iscoroutine(coro):
+                    try:
+                        loop = asyncio.get_running_loop()
+                    except RuntimeError:
+                        output = asyncio.run(coro)
+                    else:
+                        # Run coroutine in a thread to avoid nested loop issues
+                        def _runner(c):
+                            return asyncio.run(c)
+                        output = loop.run_in_executor(None, _runner, coro)  # returns Future
+                        # Wait synchronously (engine is sync) – this blocks but avoids warnings
+                        output = asyncio.wrap_future(output).result()
+                else:
+                    output = coro
+                tracer.log("tool_call_end", tool=name, tool_call_id=call_id, fallback_async=True)
+            except Exception as inner:
+                output = f"Tool '{name}' error: {inner}"
+                tracer.log("tool_call_error", tool=name, tool_call_id=call_id, error=str(inner))
         results.append(ToolMessage(content=str(output), tool_call_id=call_id))
     return results
 
