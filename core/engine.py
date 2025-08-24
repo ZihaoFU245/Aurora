@@ -39,11 +39,14 @@ class Engine:
                 pass
 
         # Build graph with closures capturing LLMs and tools
+        async def _executor(state, llm=self._executor_llm, tools=self._tools):
+            return await executor_node(state, llm, tools)
+
         self.app = build_graph(
             {
                 "router": lambda state: router_node(state, self._router_llm),
                 "planner": lambda state: planner_node(state, self._planner_llm),
-                "executor": lambda state: executor_node(state, self._executor_llm, self._tools),
+                "executor": _executor,
                 "critic": lambda state: critical_node(state, self._critic_llm),
             }
         )

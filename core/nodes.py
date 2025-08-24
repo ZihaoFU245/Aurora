@@ -29,7 +29,7 @@ def _serialize_output(output: Any) -> str:
         return json.dumps({"success": False, "error": str(e)})
 
 
-async def _execute_tool_calls_async(
+async def _execute_tool_calls(
     ai_msg: AIMessage, tools_map: Dict[str, BaseTool]
 ) -> List[ToolMessage]:
     """Execute tool calls, awaiting async tools concurrently."""
@@ -74,22 +74,6 @@ async def _execute_tool_calls_async(
     return results
 
 
-def _execute_tool_calls(ai_msg: AIMessage, tools_map: Dict[str, BaseTool]) -> List[ToolMessage]:
-    async def runner() -> List[ToolMessage]:
-        return await _execute_tool_calls_async(ai_msg, tools_map)
-
-    coro = runner()
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    new_loop = asyncio.new_event_loop()
-    try:
-        return new_loop.run_until_complete(coro)
-    finally:
-        new_loop.close()
-
-
 def router_node(state: MessagesState, llm: ChatOpenAI):
     """
     Router node: decide next step and optionally propose tool calls.
@@ -121,7 +105,7 @@ def planner_node(state: MessagesState, llm: ChatOpenAI):
     return {"messages": messages + [ai_msg]}
 
 
-def executor_node(state: MessagesState, llm: ChatOpenAI, tools: Optional[List[BaseTool]] = None):
+async def executor_node(state: MessagesState, llm: ChatOpenAI, tools: Optional[List[BaseTool]] = None):
     """
     Executor node: execute tools requested by the last AI message and append ToolMessages.
     """
@@ -132,7 +116,7 @@ def executor_node(state: MessagesState, llm: ChatOpenAI, tools: Optional[List[Ba
     last_ai = messages[-1] if messages else None
     tool_msgs: List[ToolMessage] = []
     if isinstance(last_ai, AIMessage) and getattr(last_ai, "tool_calls", None):
-        tool_msgs = _execute_tool_calls(last_ai, tools_map)
+        tool_msgs = await _execute_tool_calls(last_ai, tools_map)
     tracer.log("node_end", node="executor", tool_msgs=len(tool_msgs))
     return {"messages": messages + tool_msgs}
 
