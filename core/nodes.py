@@ -1,7 +1,11 @@
 """
 All the nodes in the graph that is needed
 """
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+import asyncio
+import inspect
+import json
+
 from langchain_core.messages import (
     AnyMessage,
     AIMessage,
@@ -10,23 +14,29 @@ from langchain_core.messages import (
 from langchain_openai import ChatOpenAI
 from langgraph.graph import MessagesState
 from langchain_core.tools import BaseTool
+
 from .utils import ensure_system
 from core import config
 from core.observability.tracing import get_tracer
-import asyncio
 
 
-def _execute_tool_calls(ai_msg: AIMessage, tools_map: Dict[str, BaseTool]) -> List[ToolMessage]:
-    """Execute tool calls from an AI message and return ToolMessage list.
+def _serialize_output(output: Any) -> str:
+    if isinstance(output, str):
+        return output
+    try:
+        return json.dumps(output, default=str)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
 
-    Implementation detail: use the synchronous tool.invoke() API to avoid mixing
-    event loops inside FastAPI (previously using asyncio.run on tool.ainvoke()
-    caused 'coroutine was never awaited' warnings when already in a running loop).
-    If a tool is async-only and raises, attempt a best-effort execution in a
-    background thread running a temporary loop.
-    """
+
+async def _execute_tool_calls_async(
+    ai_msg: AIMessage, tools_map: Dict[str, BaseTool]
+) -> List[ToolMessage]:
+    """Execute tool calls, awaiting async tools concurrently."""
     tracer = get_tracer()
     results: List[ToolMessage] = []
+    async_calls: List[Tuple[str, BaseTool, Dict[str, Any], str]] = []
+
     for call in getattr(ai_msg, "tool_calls", []) or []:
         name = call.get("name") if isinstance(call, dict) else getattr(call, "name", None)
         args = call.get("args", {}) if isinstance(call, dict) else getattr(call, "args", {})
@@ -34,47 +44,50 @@ def _execute_tool_calls(ai_msg: AIMessage, tools_map: Dict[str, BaseTool]) -> Li
         tracer.log("tool_call_start", tool=name, tool_call_id=call_id)
         tool = tools_map.get(name)
         if tool is None:
-            msg = f"Tool '{name}' not found."
             tracer.log("tool_call_missing", tool=name, tool_call_id=call_id)
-            results.append(ToolMessage(content=msg, tool_call_id=call_id))
+            results.append(ToolMessage(content=f"Tool '{name}' not found.", tool_call_id=call_id))
             continue
-        try:
-            # Primary path: synchronous invoke (LangChain wraps async internally if available)
-            output = tool.invoke(args)
-            # If an async coroutine slips through (shouldn't), resolve it safely
-            if asyncio.iscoroutine(output):  # type: ignore
-                try:
-                    loop = asyncio.get_running_loop()
-                    # Schedule and wait for completion
-                    output = loop.run_until_complete(output)  # pragma: no cover (unlikely)
-                except RuntimeError:
-                    # No running loop, create one
-                    output = asyncio.run(output)
-            tracer.log("tool_call_end", tool=name, tool_call_id=call_id)
-        except Exception as e:
-            # Fallback attempt for async-only tools
+
+        if getattr(tool, "coroutine", False) or inspect.iscoroutinefunction(getattr(tool, "ainvoke", None)):
+            async_calls.append((call_id, tool, args, name))
+        else:
             try:
-                coro = getattr(tool, "ainvoke")(args)
-                if asyncio.iscoroutine(coro):
-                    try:
-                        loop = asyncio.get_running_loop()
-                    except RuntimeError:
-                        output = asyncio.run(coro)
-                    else:
-                        # Run coroutine in a thread to avoid nested loop issues
-                        def _runner(c):
-                            return asyncio.run(c)
-                        output = loop.run_in_executor(None, _runner, coro)  # returns Future
-                        # Wait synchronously (engine is sync) – this blocks but avoids warnings
-                        output = asyncio.wrap_future(output).result()
-                else:
-                    output = coro
-                tracer.log("tool_call_end", tool=name, tool_call_id=call_id, fallback_async=True)
-            except Exception as inner:
-                output = f"Tool '{name}' error: {inner}"
-                tracer.log("tool_call_error", tool=name, tool_call_id=call_id, error=str(inner))
-        results.append(ToolMessage(content=str(output), tool_call_id=call_id))
+                output = tool.invoke(args)
+                tracer.log("tool_call_end", tool=name, tool_call_id=call_id)
+            except Exception as e:
+                tracer.log("tool_call_error", tool=name, tool_call_id=call_id, error=str(e))
+                output = {"success": False, "error": str(e)}
+            results.append(ToolMessage(content=_serialize_output(output), tool_call_id=call_id))
+
+    if async_calls:
+        tasks = [tool.ainvoke(args) for _, tool, args, _ in async_calls]
+        outputs = await asyncio.gather(*tasks, return_exceptions=True)
+        for (call_id, _, _, name), output in zip(async_calls, outputs):
+            if isinstance(output, Exception):
+                tracer.log("tool_call_error", tool=name, tool_call_id=call_id, error=str(output))
+                payload = {"success": False, "error": str(output)}
+            else:
+                tracer.log("tool_call_end", tool=name, tool_call_id=call_id)
+                payload = output
+            results.append(ToolMessage(content=_serialize_output(payload), tool_call_id=call_id))
+
     return results
+
+
+def _execute_tool_calls(ai_msg: AIMessage, tools_map: Dict[str, BaseTool]) -> List[ToolMessage]:
+    async def runner() -> List[ToolMessage]:
+        return await _execute_tool_calls_async(ai_msg, tools_map)
+
+    coro = runner()
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    new_loop = asyncio.new_event_loop()
+    try:
+        return new_loop.run_until_complete(coro)
+    finally:
+        new_loop.close()
 
 
 def router_node(state: MessagesState, llm: ChatOpenAI):

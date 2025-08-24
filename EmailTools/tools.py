@@ -14,13 +14,14 @@ transformed into structured failures while preserving message clarity.
 
 from dataclasses import asdict
 from typing import Optional, Sequence, Any, Dict
+from datetime import datetime
 
 from langchain_core.tools import tool
 
 from .AllEmails import AllEmails
 from .Providers.GmailClient import GmailClient
 from .abc import AddressListLike
-from .models import AccountInfo, Attachment, Draft
+from .models import AccountInfo, Attachment, Draft, EmailMessage
 
 # Mapping of supported provider identifiers to their client classes
 PROVIDERS = {
@@ -70,11 +71,19 @@ async def email_fetch_unread(
     account: str, max_results: int = 10, include_body: bool = False
 ) -> dict:
     """Fetch unread messages for the given account."""
+
+    def _serialize_msg(msg: EmailMessage) -> Dict[str, Any]:
+        data = asdict(msg)
+        dt = data.get("date")
+        if isinstance(dt, datetime):
+            data["date"] = dt.isoformat()
+        return data
+
     try:
         msgs = await email_manager.fetch_unread(
             account, max_results=max_results, include_body=include_body
         )
-        return _ok([asdict(m) for m in msgs], count=len(msgs))
+        return _ok([_serialize_msg(m) for m in msgs], count=len(msgs))
     except Exception as e:  # noqa: BLE001
         return _err(f"unread fetch failed: {e}")
 
