@@ -13,6 +13,7 @@ from langchain_core.tools import BaseTool
 from .utils import ensure_system
 from core import config
 from core.observability.tracing import get_tracer
+import asyncio
 
 
 def _execute_tool_calls(ai_msg: AIMessage, tools_map: Dict[str, BaseTool]) -> List[ToolMessage]:
@@ -31,7 +32,8 @@ def _execute_tool_calls(ai_msg: AIMessage, tools_map: Dict[str, BaseTool]) -> Li
             results.append(ToolMessage(content=msg, tool_call_id=call_id))
             continue
         try:
-            output = tool.invoke(args)
+            # Prefer async invocation to support async-only structured tools
+            output = asyncio.run(tool.ainvoke(args))
             tracer.log("tool_call_end", tool=name, tool_call_id=call_id)
         except Exception as e:
             output = f"Tool '{name}' error: {e}"
