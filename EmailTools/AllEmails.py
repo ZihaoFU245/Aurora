@@ -45,7 +45,7 @@ class AllEmails:
     # Methods mirroring AsyncEmailProvider with an extra `account` param
     # ------------------------------------------------------------------
     async def fetch_unread(
-        self, account: str, *, max_results: int = 10, include_body: bool = False
+            self, account: str, *, max_results: int = 10, include_body: bool = False
     ) -> List[EmailMessage]:
         provider = self._get(account)
         return await provider.fetch_unread(
@@ -57,16 +57,16 @@ class AllEmails:
         return await provider.count_unread()
 
     async def send_email(
-        self,
-        account: str,
-        *,
-        to: AddressListLike,
-        subject: str,
-        body_text: str,
-        cc: Optional[AddressListLike] = None,
-        bcc: Optional[AddressListLike] = None,
-        html_body: Optional[str] = None,
-        attachments: Optional[Sequence[Attachment]] = None,
+            self,
+            account: str,
+            *,
+            to: AddressListLike,
+            subject: str,
+            body_text: str,
+            cc: Optional[AddressListLike] = None,
+            bcc: Optional[AddressListLike] = None,
+            html_body: Optional[str] = None,
+            attachments: Optional[Sequence[Attachment]] = None,
     ) -> Dict[str, Any]:
         provider = self._get(account)
         return await provider.send_email(
@@ -88,22 +88,22 @@ class AllEmails:
         return await provider.mark_unread(message_ids)
 
     async def delete_message(
-        self, account: str, message_id: str, *, permanent: bool = False
+            self, account: str, message_id: str, *, permanent: bool = False
     ) -> Dict[str, Any]:
         provider = self._get(account)
         return await provider.delete_message(message_id, permanent=permanent)
 
     async def create_draft(
-        self,
-        account: str,
-        *,
-        to: AddressListLike,
-        subject: str,
-        body_text: str,
-        cc: Optional[AddressListLike] = None,
-        bcc: Optional[AddressListLike] = None,
-        html_body: Optional[str] = None,
-        attachments: Optional[Sequence[Attachment]] = None,
+            self,
+            account: str,
+            *,
+            to: AddressListLike,
+            subject: str,
+            body_text: str,
+            cc: Optional[AddressListLike] = None,
+            bcc: Optional[AddressListLike] = None,
+            html_body: Optional[str] = None,
+            attachments: Optional[Sequence[Attachment]] = None,
     ) -> Draft:
         provider = self._get(account)
         return await provider.create_draft(
@@ -117,17 +117,17 @@ class AllEmails:
         )
 
     async def update_draft(
-        self,
-        account: str,
-        *,
-        draft_id: str,
-        to: AddressListLike,
-        subject: str,
-        body_text: str,
-        cc: Optional[AddressListLike] = None,
-        bcc: Optional[AddressListLike] = None,
-        html_body: Optional[str] = None,
-        attachments: Optional[Sequence[Attachment]] = None,
+            self,
+            account: str,
+            *,
+            draft_id: str,
+            to: AddressListLike,
+            subject: str,
+            body_text: str,
+            cc: Optional[AddressListLike] = None,
+            bcc: Optional[AddressListLike] = None,
+            html_body: Optional[str] = None,
+            attachments: Optional[Sequence[Attachment]] = None,
     ) -> Draft:
         provider = self._get(account)
         return await provider.update_draft(
@@ -146,7 +146,7 @@ class AllEmails:
         return await provider.send_draft(draft_id=draft_id)
 
     async def list_drafts(
-        self, account: str, *, max_results: int = 10
+            self, account: str, *, max_results: int = 10
     ) -> List[Draft]:
         provider = self._get(account)
         return await provider.list_drafts(max_results=max_results)

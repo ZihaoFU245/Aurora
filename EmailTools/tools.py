@@ -21,7 +21,7 @@ PROVIDERS = {
 
 @tool("add_account")
 def add_account(provider: str, name: str, email: str) -> str:
-    """Add a new email account for the specified provider."""
+    """Add a new email account for the specified provider and trigger auth if needed."""
 
     provider_key = provider.lower()
     provider_cls = PROVIDERS.get(provider_key)
@@ -29,7 +29,12 @@ def add_account(provider: str, name: str, email: str) -> str:
         return f"provider '{provider}' is not supported"
 
     account = AccountInfo(name=name, provider=provider_key, email=email)
-    email_manager.register(provider_cls(account, {}))
+    try:
+        # Instantiating the provider triggers authentication (e.g., Gmail OAuth)
+        provider_instance = provider_cls(account, {})
+        email_manager.register(provider_instance)
+    except Exception as e:
+        return f"failed to register {name}: {e}"
     return f"registered {name}"
 
 
@@ -192,5 +197,3 @@ async def email_delete_draft(account: str, *, draft_id: str) -> dict:
     """Delete a draft."""
 
     return await email_manager.delete_draft(account, draft_id=draft_id)
-
-

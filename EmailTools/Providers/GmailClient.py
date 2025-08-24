@@ -29,7 +29,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-from .. import config
+from ..config import Config
 from ..abc import AsyncEmailProvider, AddressListLike
 from ..models import (
     AccountInfo,
@@ -56,10 +56,12 @@ class GmailClient(AsyncEmailProvider):
         super().__init__(account, secrets)
 
         creds: Optional[Credentials] = None
-        token_name = f"{account.name}_gmail.json"
+        # Sanitize account name for filesystem safety
+        safe_name = "".join(c if (c.isalnum() or c in ("-", "_")) else "_" for c in account.name)
+        token_name = f"{safe_name}_gmail.json"
         token_path = (
-            os.path.join(config.TOKEN_PATH, token_name)
-            if config.TOKEN_PATH
+            os.path.join(Config.TOKEN_PATH, token_name)
+            if Config.TOKEN_PATH
             else token_name
         )
         # Ensure the token directory exists before attempting to read/write.
@@ -77,8 +79,14 @@ class GmailClient(AsyncEmailProvider):
                 except Exception:
                     creds = None
             if not creds or not creds.valid:
+                # Validate credentials file path early for better error messages.
+                cred_path = Config.GOOGLE_CREDENTIALS_PATH
+                if not cred_path or not os.path.exists(cred_path):
+                    raise FileNotFoundError(
+                        f"GOOGLE_CREDENTIALS_PATH is not set or does not exist: {cred_path!r}"
+                    )
                 flow = InstalledAppFlow.from_client_secrets_file(
-                    config.GOOGLE_CREDENTIALS_PATH, self.SCOPES
+                    cred_path, self.SCOPES
                 )
                 creds = flow.run_local_server(port=0)
             # Persist the refreshed/created credentials so the user does not
@@ -118,15 +126,15 @@ class GmailClient(AsyncEmailProvider):
         return None
 
     def _build_message(
-        self,
-        *,
-        to: AddressListLike,
-        subject: str,
-        body_text: str,
-        cc: Optional[AddressListLike] = None,
-        bcc: Optional[AddressListLike] = None,
-        html_body: Optional[str] = None,
-        attachments: Optional[Sequence[Attachment]] = None,
+            self,
+            *,
+            to: AddressListLike,
+            subject: str,
+            body_text: str,
+            cc: Optional[AddressListLike] = None,
+            bcc: Optional[AddressListLike] = None,
+            html_body: Optional[str] = None,
+            attachments: Optional[Sequence[Attachment]] = None,
     ) -> _EmailMessage:
         def _fmt(a: Any) -> str:
             if isinstance(a, EmailAddress):
@@ -200,7 +208,7 @@ class GmailClient(AsyncEmailProvider):
     # API methods implementing AsyncEmailProvider
     # ------------------------------------------------------------------
     async def fetch_unread(
-        self, *, max_results: int = 10, include_body: bool = False
+            self, *, max_results: int = 10, include_body: bool = False
     ) -> List[EmailMessage]:
         def _inner() -> List[EmailMessage]:
             res = (
@@ -239,15 +247,15 @@ class GmailClient(AsyncEmailProvider):
         return await asyncio.to_thread(_inner)
 
     async def send_email(
-        self,
-        *,
-        to: AddressListLike,
-        subject: str,
-        body_text: str,
-        cc: Optional[AddressListLike] = None,
-        bcc: Optional[AddressListLike] = None,
-        html_body: Optional[str] = None,
-        attachments: Optional[Sequence[Attachment]] = None,
+            self,
+            *,
+            to: AddressListLike,
+            subject: str,
+            body_text: str,
+            cc: Optional[AddressListLike] = None,
+            bcc: Optional[AddressListLike] = None,
+            html_body: Optional[str] = None,
+            attachments: Optional[Sequence[Attachment]] = None,
     ) -> Dict[str, Any]:
         message = self._build_message(
             to=to,
@@ -315,15 +323,15 @@ class GmailClient(AsyncEmailProvider):
         return await asyncio.to_thread(_inner)
 
     async def create_draft(
-        self,
-        *,
-        to: AddressListLike,
-        subject: str,
-        body_text: str,
-        cc: Optional[AddressListLike] = None,
-        bcc: Optional[AddressListLike] = None,
-        html_body: Optional[str] = None,
-        attachments: Optional[Sequence[Attachment]] = None,
+            self,
+            *,
+            to: AddressListLike,
+            subject: str,
+            body_text: str,
+            cc: Optional[AddressListLike] = None,
+            bcc: Optional[AddressListLike] = None,
+            html_body: Optional[str] = None,
+            attachments: Optional[Sequence[Attachment]] = None,
     ) -> Draft:
         msg = self._build_message(
             to=to,
@@ -358,16 +366,16 @@ class GmailClient(AsyncEmailProvider):
         return await asyncio.to_thread(_inner)
 
     async def update_draft(
-        self,
-        *,
-        draft_id: str,
-        to: AddressListLike,
-        subject: str,
-        body_text: str,
-        cc: Optional[AddressListLike] = None,
-        bcc: Optional[AddressListLike] = None,
-        html_body: Optional[str] = None,
-        attachments: Optional[Sequence[Attachment]] = None,
+            self,
+            *,
+            draft_id: str,
+            to: AddressListLike,
+            subject: str,
+            body_text: str,
+            cc: Optional[AddressListLike] = None,
+            bcc: Optional[AddressListLike] = None,
+            html_body: Optional[str] = None,
+            attachments: Optional[Sequence[Attachment]] = None,
     ) -> Draft:
         msg = self._build_message(
             to=to,
@@ -487,4 +495,3 @@ class GmailClient(AsyncEmailProvider):
     async def get_summary(self) -> Dict[str, Any]:
         unread = await self.count_unread()
         return {"account": self.account.name, "unread": unread}
-

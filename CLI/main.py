@@ -10,7 +10,7 @@ from CurrentTimeTools.Tools import getCurrentTime
 from WebSearchTools import ddg_html_search, ddg_html_search_enrich, visit_website, crawl_website
 from WriteFileTools import create_file, write_file, replace_in_file, read_file
 
-
+from EmailTools import getAll
 
 def _last_ai_text(messages: List[AnyMessage]) -> str:
     for m in reversed(messages or []):
@@ -34,6 +34,7 @@ def main():
         replace_in_file,
         read_file,
     ]
+    tools += getAll()
     engine = Engine(tools=tools)
 
     history: List[AnyMessage] = []
