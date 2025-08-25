@@ -13,7 +13,9 @@ transformed into structured failures while preserving message clarity.
 """
 
 from dataclasses import asdict
-from typing import Optional, Sequence, Any, Dict
+from typing import Optional, Sequence, Any, Dict, Iterable
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from langchain_core.tools import tool
 
@@ -30,6 +32,48 @@ PROVIDERS = {
 # A single manager instance used by all tools (persistence handled inside)
 email_manager = AllEmails(providers=PROVIDERS)
 
+# ---- helpers ----
+_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+
+def _run(coro):
+    """
+    Run an async coroutine from a sync context.
+    - If there's no running event loop, use asyncio.run(coro).
+    - If already in an event loop, run it in a private loop inside a worker thread.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    def _runner():
+        return asyncio.run(coro)
+
+    fut = _EXECUTOR.submit(_runner)
+    return fut.result()
+
+
+def _coerce_ids(value: Any) -> list[str]:
+    """
+    Accepts a single id string, an iterable of ids, or an iterable of dicts with 'id'.
+    Returns a list[str] suitable for provider.batchModify.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Iterable):
+        out: list[str] = []
+        for v in value:
+            if isinstance(v, str):
+                out.append(v)
+            elif isinstance(v, dict) and "id" in v:
+                out.append(str(v["id"]))
+            else:
+                out.append(str(v))
+        return out
+    return [str(value)]
+
 
 def _ok(data: Any = None, **meta: Any) -> Dict[str, Any]:  # Helper for uniform success
     return {"success": True, "data": data, **({"meta": meta} if meta else {})}
@@ -37,6 +81,23 @@ def _ok(data: Any = None, **meta: Any) -> Dict[str, Any]:  # Helper for uniform 
 
 def _err(error: str, **meta: Any) -> Dict[str, Any]:  # Helper for uniform failure
     return {"success": False, "error": error, **({"meta": meta} if meta else {})}
+
+
+def _resolve_account_name(account: Optional[str]) -> str:
+    """
+    If the caller didn't pass an account, use the only registered one.
+    If there are 0 or >1 accounts, raise ValueError with a helpful message.
+    """
+    if account:
+        return account
+    accounts = email_manager.get_accounts()
+    if len(accounts) == 1:
+        return accounts[0].name
+    available = [f"{a.name} ({a.email})" for a in accounts] or ["<none>"]
+    raise ValueError(
+        "account is required; none was provided and auto-selection is ambiguous. "
+        f"Available: {', '.join(available)}"
+    )
 
 
 @tool("add_account")
@@ -66,22 +127,23 @@ def list_email_accounts() -> dict:
 
 
 @tool("email_fetch_unread")
-async def email_fetch_unread(
-    account: str, max_results: int = 10, include_body: bool = False
+def email_fetch_unread(
+    account: Optional[str] = None, max_results: int = 10, include_body: bool = False
 ) -> dict:
     """Fetch unread messages for the given account."""
     try:
-        msgs = await email_manager.fetch_unread(
-            account, max_results=max_results, include_body=include_body
-        )
-        return _ok([asdict(m) for m in msgs], count=len(msgs))
+        acct = _resolve_account_name(account)
+        msgs = _run(email_manager.fetch_unread(
+            acct, max_results=max_results, include_body=include_body
+        ))
+        return _ok([asdict(m) for m in msgs], count=len(msgs), account=acct)
     except Exception as e:  # noqa: BLE001
         return _err(f"unread fetch failed: {e}")
 
 
 @tool("email_send")
-async def email_send(
-    account: str,
+def email_send(
+    account: Optional[str] = None,
     *,
     to: AddressListLike,
     subject: str,
@@ -93,8 +155,9 @@ async def email_send(
 ) -> dict:
     """Send an email using the specified account."""
     try:
-        res = await email_manager.send_email(
-            account,
+        acct = _resolve_account_name(account)
+        res = _run(email_manager.send_email(
+            acct,
             to=to,
             subject=subject,
             body_text=body_text,
@@ -102,54 +165,68 @@ async def email_send(
             bcc=bcc,
             html_body=html_body,
             attachments=attachments,
-        )
-        return _ok(res)
+        ))
+        data = {
+            "status": "sent",
+            "message_id": res.get("id"),
+            "thread_id": res.get("threadId"),
+        }
+        return _ok(data, account=acct, raw=res)
     except Exception as e:  # noqa: BLE001
         return _err(f"send failed: {e}")
 
 
 @tool("email_mark_read")
-async def email_mark_read(account: str, message_ids: Sequence[str]) -> dict:
+def email_mark_read(account: Optional[str] = None, message_ids: Sequence[str] | str = ()) -> dict:
     """Mark the given message ids as read for an account."""
     try:
-        return _ok(await email_manager.mark_read(account, list(message_ids)))
+        acct = _resolve_account_name(account)
+        ids = _coerce_ids(message_ids)
+        res = _run(email_manager.mark_read(acct, ids))
+        return _ok({"marked_read": ids, "provider_response": res}, account=acct)
     except Exception as e:  # noqa: BLE001
         return _err(f"mark read failed: {e}")
 
 
 @tool("email_mark_unread")
-async def email_mark_unread(account: str, message_ids: Sequence[str]) -> dict:
+def email_mark_unread(account: Optional[str] = None, message_ids: Sequence[str] | str = ()) -> dict:
     """Mark the given message ids as unread for an account."""
     try:
-        return _ok(await email_manager.mark_unread(account, list(message_ids)))
+        acct = _resolve_account_name(account)
+        ids = _coerce_ids(message_ids)
+        res = _run(email_manager.mark_unread(acct, ids))
+        return _ok({"marked_unread": ids, "provider_response": res}, account=acct)
     except Exception as e:  # noqa: BLE001
         return _err(f"mark unread failed: {e}")
 
 
 @tool("email_delete_message")
-async def email_delete_message(
-    account: str, message_id: str, *, permanent: bool = False
+def email_delete_message(
+    account: Optional[str] = None, message_id: str = "", *, permanent: bool = False
 ) -> dict:
     """Delete a message; use permanent=True to skip trash."""
     try:
-        return _ok(await email_manager.delete_message(account, message_id, permanent=permanent))
+        acct = _resolve_account_name(account)
+        res = _run(email_manager.delete_message(acct, message_id, permanent=permanent))
+        return _ok({"deleted": message_id, "permanent": permanent, "provider_response": res}, account=acct)
     except Exception as e:  # noqa: BLE001
         return _err(f"delete failed: {e}")
 
 
 @tool("email_count_unread")
-async def email_count_unread(account: str) -> dict:
+def email_count_unread(account: Optional[str] = None) -> dict:
     """Return the number of unread messages for an account."""
     try:
-        count = await email_manager.count_unread(account)
-        return _ok({"unread": count})
+        acct = _resolve_account_name(account)
+        count = _run(email_manager.count_unread(acct))
+        return _ok({"unread": count}, account=acct)
     except Exception as e:  # noqa: BLE001
         return _err(f"count failed: {e}")
 
 
 @tool("email_create_draft")
-async def email_create_draft(
-    account: str,
+def email_create_draft(
+    account: Optional[str] = None,
     *,
     to: AddressListLike,
     subject: str,
@@ -161,8 +238,9 @@ async def email_create_draft(
 ) -> dict:
     """Create a draft email and return its metadata."""
     try:
-        draft: Draft = await email_manager.create_draft(
-            account,
+        acct = _resolve_account_name(account)
+        draft: Draft = _run(email_manager.create_draft(
+            acct,
             to=to,
             subject=subject,
             body_text=body_text,
@@ -170,15 +248,15 @@ async def email_create_draft(
             bcc=bcc,
             html_body=html_body,
             attachments=attachments,
-        )
-        return _ok(asdict(draft))
+        ))
+        return _ok(asdict(draft), account=acct)
     except Exception as e:  # noqa: BLE001
         return _err(f"create draft failed: {e}")
 
 
 @tool("email_update_draft")
-async def email_update_draft(
-    account: str,
+def email_update_draft(
+    account: Optional[str] = None,
     *,
     draft_id: str,
     to: AddressListLike,
@@ -191,8 +269,9 @@ async def email_update_draft(
 ) -> dict:
     """Update an existing draft."""
     try:
-        draft: Draft = await email_manager.update_draft(
-            account,
+        acct = _resolve_account_name(account)
+        draft: Draft = _run(email_manager.update_draft(
+            acct,
             draft_id=draft_id,
             to=to,
             subject=subject,
@@ -201,55 +280,68 @@ async def email_update_draft(
             bcc=bcc,
             html_body=html_body,
             attachments=attachments,
-        )
-        return _ok(asdict(draft))
+        ))
+        return _ok(asdict(draft), account=acct)
     except Exception as e:  # noqa: BLE001
         return _err(f"update draft failed: {e}")
 
 
 @tool("email_send_draft")
-async def email_send_draft(account: str, *, draft_id: str) -> dict:
+def email_send_draft(account: Optional[str] = None, *, draft_id: str) -> dict:
     """Send a previously created draft."""
     try:
-        return _ok(await email_manager.send_draft(account, draft_id=draft_id))
+        acct = _resolve_account_name(account)
+        res = _run(email_manager.send_draft(acct, draft_id=draft_id))
+        data = {
+            "status": "sent_draft",
+            "draft_id": draft_id,
+            "message_id": res.get("id"),
+            "thread_id": res.get("threadId"),
+        }
+        return _ok(data, account=acct, raw=res)
     except Exception as e:  # noqa: BLE001
         return _err(f"send draft failed: {e}")
 
 
 @tool("email_list_drafts")
-async def email_list_drafts(account: str, max_results: int = 10) -> dict:
+def email_list_drafts(account: Optional[str] = None, max_results: int = 10) -> dict:
     """List drafts for an account."""
     try:
-        drafts = await email_manager.list_drafts(account, max_results=max_results)
-        return _ok([asdict(d) for d in drafts], count=len(drafts))
+        acct = _resolve_account_name(account)
+        drafts = _run(email_manager.list_drafts(acct, max_results=max_results))
+        return _ok([asdict(d) for d in drafts], count=len(drafts), account=acct)
     except Exception as e:  # noqa: BLE001
         return _err(f"list drafts failed: {e}")
 
 
 @tool("email_get_draft")
-async def email_get_draft(account: str, *, draft_id: str) -> dict:
+def email_get_draft(account: Optional[str] = None, *, draft_id: str) -> dict:
     """Retrieve a single draft by id."""
     try:
-        draft = await email_manager.get_draft(account, draft_id=draft_id)
-        return _ok(asdict(draft))
+        acct = _resolve_account_name(account)
+        draft = _run(email_manager.get_draft(acct, draft_id=draft_id))
+        return _ok(asdict(draft), account=acct)
     except Exception as e:  # noqa: BLE001
         return _err(f"get draft failed: {e}")
 
 
 @tool("email_delete_draft")
-async def email_delete_draft(account: str, *, draft_id: str) -> dict:
+def email_delete_draft(account: Optional[str] = None, *, draft_id: str) -> dict:
     """Delete a draft."""
     try:
-        return _ok(await email_manager.delete_draft(account, draft_id=draft_id))
+        acct = _resolve_account_name(account)
+        res = _run(email_manager.delete_draft(acct, draft_id=draft_id))
+        return _ok({"deleted_draft": draft_id, "provider_response": res}, account=acct)
     except Exception as e:  # noqa: BLE001
         return _err(f"delete draft failed: {e}")
 
 
 @tool("email_health")
-async def email_health(account: str) -> dict:
+def email_health(account: Optional[str] = None) -> dict:
     """Basic health check: returns unread count to validate connectivity."""
     try:
-        count = await email_manager.count_unread(account)
-        return _ok({"unread": count})
+        acct = _resolve_account_name(account)
+        count = _run(email_manager.count_unread(acct))
+        return _ok({"unread": count}, account=acct)
     except Exception as e:  # noqa: BLE001
         return _err(f"health check failed: {e}")
