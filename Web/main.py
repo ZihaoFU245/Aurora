@@ -16,7 +16,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemM
 from core.engine import Engine
 from CurrentTimeTools.Tools import getCurrentTime
 from WebSearchTools import ddg_html_search, ddg_html_search_enrich, visit_website, crawl_website
-from WriteFileTools import create_file, write_file, replace_in_file, read_file
+from WriteFileTools import create_file, write_file, replace_in_file, read_file, pwd, ls, cp
 from EmailTools import getAll
 import json, uuid, datetime
 
@@ -73,6 +73,9 @@ def get_engine():
         write_file,
         replace_in_file,
         read_file,
+        pwd,
+        ls,
+        cp
     ]
     tools += getAll()
     return Engine(tools=tools)

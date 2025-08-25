@@ -13,7 +13,8 @@ transformed into structured failures while preserving message clarity.
 """
 
 from dataclasses import asdict
-from typing import Optional, Sequence, Any, Dict, Iterable
+from typing import Optional, Sequence, Any, Dict, Iterable, List, Union
+import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
@@ -88,6 +89,12 @@ def _resolve_account_name(account: Optional[str]) -> str:
     If the caller didn't pass an account, use the only registered one.
     If there are 0 or >1 accounts, raise ValueError with a helpful message.
     """
+    # Accept a full account dict (as returned by list_email_accounts) for robustness.
+    if isinstance(account, dict):  # type: ignore[redundant-expr]
+        # Prefer provided name; fall back to email if name missing.
+        name = account.get("name") or account.get("email")
+        if name:
+            return name
     if account:
         return account
     accounts = email_manager.get_accounts()
@@ -98,6 +105,76 @@ def _resolve_account_name(account: Optional[str]) -> str:
         "account is required; none was provided and auto-selection is ambiguous. "
         f"Available: {', '.join(available)}"
     )
+
+
+def _coerce_attachments(raw: Optional[Sequence[Any]]) -> Optional[List[Attachment]]:
+    """Normalize a variety of user-friendly attachment specs into Attachment objects.
+
+    Accepted forms (mixed allowed):
+      - Attachment dataclass instances (passed through)
+      - String paths: "reports/summary.pdf"
+      - Dicts with keys:
+          {"path": "..."} or {"file_path": "..."}
+          Optional: filename, mime_type, content_bytes
+      - Dicts with already-correct keys for Attachment
+
+    If a dict supplies only a path/file_path and no filename, the basename is used.
+    Missing files raise a ValueError listing all missing paths (fail-fast before API call).
+    """
+    if raw is None:
+        return None
+    out: List[Attachment] = []
+    missing: List[str] = []
+    for item in raw:
+        if isinstance(item, Attachment):
+            # Ensure filename if possible from file_path
+            if not item.filename and item.file_path:
+                item.filename = os.path.basename(item.file_path)
+            out.append(item)
+            continue
+        if isinstance(item, str):
+            path = item
+            if not os.path.exists(path):
+                missing.append(path)
+            out.append(Attachment(filename=os.path.basename(path), file_path=path))
+            continue
+        if isinstance(item, dict):
+            # Support legacy key 'path'
+            path = item.get("file_path") or item.get("path")
+            filename = item.get("filename")
+            mime_type = item.get("mime_type")
+            content_b64 = item.get("content_bytes") or item.get("content_b64")
+            if path:
+                if not filename:
+                    filename = os.path.basename(path)
+                if not os.path.exists(path):
+                    missing.append(path)
+                out.append(
+                    Attachment(
+                        filename=filename,
+                        file_path=path,
+                        mime_type=mime_type,
+                        content_bytes=content_b64,
+                    )
+                )
+            else:
+                # Inlined content (must supply filename + content)
+                if not (filename and content_b64):
+                    raise ValueError(
+                        "Inline attachment dict must include filename and content_bytes/content_b64"
+                    )
+                out.append(
+                    Attachment(
+                        filename=filename,
+                        mime_type=mime_type,
+                        content_bytes=content_b64,
+                    )
+                )
+            continue
+        raise TypeError(f"Unsupported attachment spec: {item!r}")
+    if missing:
+        raise ValueError(f"attachment file(s) not found: {', '.join(missing)}")
+    return out
 
 
 @tool("add_account")
@@ -143,7 +220,7 @@ def email_fetch_unread(
 
 @tool("email_send")
 def email_send(
-    account: Optional[str] = None,
+    account: Optional[Union[str, Dict[str, Any]]] = None,
     *,
     to: AddressListLike,
     subject: str,
@@ -151,21 +228,31 @@ def email_send(
     cc: Optional[AddressListLike] = None,
     bcc: Optional[AddressListLike] = None,
     html_body: Optional[str] = None,
-    attachments: Optional[Sequence[Attachment]] = None,
+    attachments: Optional[Sequence[Any]] = None,
 ) -> dict:
-    """Send an email using the specified account."""
+    """Send an email using the specified account.
+
+    Attachment flexibility: accepts list of
+      - paths (str)
+      - dicts with path/file_path (+ optional filename, mime_type)
+      - dicts with filename + content_bytes (base64)
+      - Attachment objects
+    """
     try:
-        acct = _resolve_account_name(account)
-        res = _run(email_manager.send_email(
-            acct,
-            to=to,
-            subject=subject,
-            body_text=body_text,
-            cc=cc,
-            bcc=bcc,
-            html_body=html_body,
-            attachments=attachments,
-        ))
+        acct = _resolve_account_name(account)  # type: ignore[arg-type]
+        norm_attachments = _coerce_attachments(attachments)
+        res = _run(
+            email_manager.send_email(
+                acct,
+                to=to,
+                subject=subject,
+                body_text=body_text,
+                cc=cc,
+                bcc=bcc,
+                html_body=html_body,
+                attachments=norm_attachments,
+            )
+        )
         data = {
             "status": "sent",
             "message_id": res.get("id"),
@@ -226,7 +313,7 @@ def email_count_unread(account: Optional[str] = None) -> dict:
 
 @tool("email_create_draft")
 def email_create_draft(
-    account: Optional[str] = None,
+    account: Optional[Union[str, Dict[str, Any]]] = None,
     *,
     to: AddressListLike,
     subject: str,
@@ -234,21 +321,24 @@ def email_create_draft(
     cc: Optional[AddressListLike] = None,
     bcc: Optional[AddressListLike] = None,
     html_body: Optional[str] = None,
-    attachments: Optional[Sequence[Attachment]] = None,
+    attachments: Optional[Sequence[Any]] = None,
 ) -> dict:
-    """Create a draft email and return its metadata."""
+    """Create a draft email and return its metadata (supports flexible attachment specs)."""
     try:
-        acct = _resolve_account_name(account)
-        draft: Draft = _run(email_manager.create_draft(
-            acct,
-            to=to,
-            subject=subject,
-            body_text=body_text,
-            cc=cc,
-            bcc=bcc,
-            html_body=html_body,
-            attachments=attachments,
-        ))
+        acct = _resolve_account_name(account)  # type: ignore[arg-type]
+        norm_attachments = _coerce_attachments(attachments)
+        draft: Draft = _run(
+            email_manager.create_draft(
+                acct,
+                to=to,
+                subject=subject,
+                body_text=body_text,
+                cc=cc,
+                bcc=bcc,
+                html_body=html_body,
+                attachments=norm_attachments,
+            )
+        )
         return _ok(asdict(draft), account=acct)
     except Exception as e:  # noqa: BLE001
         return _err(f"create draft failed: {e}")
@@ -256,7 +346,7 @@ def email_create_draft(
 
 @tool("email_update_draft")
 def email_update_draft(
-    account: Optional[str] = None,
+    account: Optional[Union[str, Dict[str, Any]]] = None,
     *,
     draft_id: str,
     to: AddressListLike,
@@ -265,22 +355,25 @@ def email_update_draft(
     cc: Optional[AddressListLike] = None,
     bcc: Optional[AddressListLike] = None,
     html_body: Optional[str] = None,
-    attachments: Optional[Sequence[Attachment]] = None,
+    attachments: Optional[Sequence[Any]] = None,
 ) -> dict:
-    """Update an existing draft."""
+    """Update an existing draft (supports flexible attachment specs)."""
     try:
-        acct = _resolve_account_name(account)
-        draft: Draft = _run(email_manager.update_draft(
-            acct,
-            draft_id=draft_id,
-            to=to,
-            subject=subject,
-            body_text=body_text,
-            cc=cc,
-            bcc=bcc,
-            html_body=html_body,
-            attachments=attachments,
-        ))
+        acct = _resolve_account_name(account)  # type: ignore[arg-type]
+        norm_attachments = _coerce_attachments(attachments)
+        draft: Draft = _run(
+            email_manager.update_draft(
+                acct,
+                draft_id=draft_id,
+                to=to,
+                subject=subject,
+                body_text=body_text,
+                cc=cc,
+                bcc=bcc,
+                html_body=html_body,
+                attachments=norm_attachments,
+            )
+        )
         return _ok(asdict(draft), account=acct)
     except Exception as e:  # noqa: BLE001
         return _err(f"update draft failed: {e}")

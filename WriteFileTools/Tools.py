@@ -3,6 +3,8 @@ Write file tools for agents
 """
 from langchain_core.tools import tool
 from pathlib import Path
+import shutil
+import os
 import re
 from typing import Dict, Optional
 
@@ -130,3 +132,126 @@ def replace_in_file(
     if new_text != text:
         p.write_text(new_text, encoding=encoding)
     return {"ok": True, "path": str(p), "replacements": n}
+
+
+@tool
+def pwd() -> Dict:
+    """Return the current working directory.
+
+    Returns: dict {ok, cwd}
+    """
+    return {"ok": True, "cwd": str(Path.cwd())}
+
+
+@tool
+def ls(path: str = ".", recursive: bool = False, include_hidden: bool = False, max_entries: int = 500) -> Dict:
+    """List directory entries.
+
+    Inputs:
+    - path: directory path to list (default '.')
+    - recursive: if True, walk directory tree (default False)
+    - include_hidden: include entries starting with '.' (default False)
+    - max_entries: cap number of entries returned to avoid huge outputs (default 500)
+    Returns: dict {ok, path, entries:[{name,type,size,mtime,path,rel_path}], truncated}
+    """
+    p = Path(path)
+    if not p.exists():
+        return {"ok": False, "error": "path not found", "path": str(p)}
+    if not p.is_dir():
+        # If it's a file, just return its info
+        stat = p.stat()
+        return {
+            "ok": True,
+            "path": str(p),
+            "entries": [
+                {
+                    "name": p.name,
+                    "type": "file",
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                    "path": str(p.resolve()),
+                    "rel_path": p.name,
+                }
+            ],
+            "truncated": False,
+        }
+
+    entries = []
+    truncated = False
+
+    def add_entry(base: Path, entry: Path):
+        nonlocal truncated
+        if len(entries) >= max_entries:
+            truncated = True
+            return
+        try:
+            stat = entry.stat()
+            entries.append(
+                {
+                    "name": entry.name,
+                    "type": "dir" if entry.is_dir() else "file",
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                    "path": str(entry.resolve()),
+                    "rel_path": str(entry.relative_to(base)),
+                }
+            )
+        except OSError as e:
+            entries.append(
+                {
+                    "name": entry.name,
+                    "type": "error",
+                    "error": str(e),
+                    "path": str(entry),
+                    "rel_path": str(entry.relative_to(base)) if entry.exists() else entry.name,
+                }
+            )
+
+    base = p.resolve()
+    if recursive:
+        for root, dirs, files in os.walk(base):
+            root_path = Path(root)
+            # Combine dirs + files for ordering
+            names = sorted(dirs) + sorted(files)
+            for name in names:
+                if not include_hidden and name.startswith('.'):
+                    continue
+                add_entry(base, root_path / name)
+            if truncated:
+                break
+    else:
+        for entry in sorted(p.iterdir(), key=lambda x: x.name):
+            if not include_hidden and entry.name.startswith('.'):
+                continue
+            add_entry(base, entry)
+            if truncated:
+                break
+
+    return {"ok": True, "path": str(p.resolve()), "entries": entries, "truncated": truncated}
+
+
+@tool
+def cp(src: str, dst: str, overwrite: bool = False) -> Dict:
+    """Copy a file (no directory tree copy, no deletion).
+
+    Inputs:
+    - src: source file path
+    - dst: destination file path (file or directory). If dst is an existing directory, copy inside it retaining filename.
+    - overwrite: if False and destination file exists, fail (default False)
+    Returns: dict {ok, src, dst, bytes}
+    """
+    src_path = Path(src)
+    if not src_path.exists():
+        return {"ok": False, "error": "source not found", "src": str(src_path)}
+    if not src_path.is_file():
+        return {"ok": False, "error": "only regular file copy supported", "src": str(src_path)}
+
+    dst_path = Path(dst)
+    if dst_path.is_dir():
+        dst_path = dst_path / src_path.name
+    if dst_path.exists() and not overwrite:
+        return {"ok": False, "error": "destination exists", "dst": str(dst_path), "src": str(src_path)}
+    _ensure_parent(dst_path)
+    shutil.copyfile(src_path, dst_path)
+    size = dst_path.stat().st_size
+    return {"ok": True, "src": str(src_path.resolve()), "dst": str(dst_path.resolve()), "bytes": size}
