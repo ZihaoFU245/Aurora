@@ -52,6 +52,10 @@ class GmailClient(AsyncEmailProvider):
         "https://www.googleapis.com/auth/gmail.send",
     )
 
+    #: Hard upper bound for number of emails fetched in a single call.  Values
+    #: greater than this are clipped (never raise) to avoid huge responses.
+    MAX_FETCH_RESULTS: int = 50
+
     def __init__(self, account: AccountInfo, secrets: Dict[str, str]):
         super().__init__(account, secrets)
 
@@ -188,6 +192,17 @@ class GmailClient(AsyncEmailProvider):
         cc_header = headers.get("Cc")
         bcc_header = headers.get("Bcc")
         from_header = headers.get("From", "")
+        # Trim the raw Gmail payload to only essential, high-signal fields to
+        # reduce size / token cost for downstream LLM usage.
+        trimmed_payload: Dict[str, Any] = {
+            "id": msg.get("id"),
+            "threadId": msg.get("threadId"),
+            "labelIds": msg.get("labelIds"),
+            "historyId": msg.get("historyId"),
+            "internalDate": msg.get("internalDate"),
+            "snippet": msg.get("snippet"),
+            "headers": {k: headers.get(k) for k in ("Subject", "From", "To", "Cc", "Bcc", "Date")},
+        }
 
         return EmailMessage(
             id=msg["id"],
@@ -201,7 +216,8 @@ class GmailClient(AsyncEmailProvider):
             body_text=self._extract_plain_body(payload),
             labels=list(msg.get("labelIds", [])),
             is_read="UNREAD" not in msg.get("labelIds", []),
-            raw_provider_payload=msg,
+            thread_id=msg.get("threadId"),
+            raw_provider_payload=trimmed_payload,
         )
 
     # ------------------------------------------------------------------
@@ -211,10 +227,12 @@ class GmailClient(AsyncEmailProvider):
             self, *, max_results: int = 10, include_body: bool = False
     ) -> List[EmailMessage]:
         def _inner() -> List[EmailMessage]:
+            # Clip overly large requests silently to the supported maximum.
+            clipped_max = min(max_results, self.MAX_FETCH_RESULTS)
             res = (
                 self.service.users()
                 .messages()
-                .list(userId="me", q="is:unread", maxResults=max_results)
+                .list(userId="me", q="is:unread", maxResults=clipped_max)
                 .execute()
             )
             messages = []

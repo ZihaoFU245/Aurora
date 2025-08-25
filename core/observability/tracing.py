@@ -22,7 +22,15 @@ class EventTracer:
         self._logger = logging.getLogger(_LOGGER_NAME)
         # Ensure idempotent handler setup
         if not self._logger.handlers:
+            # Truncate the logfile at startup so each run starts fresh
+            try:
+                with open(self.logfile, "w", encoding="utf-8"):
+                    pass
+            except Exception:
+                # If truncation fails we proceed; handler will attempt to create the file
+                pass
             self._logger.setLevel(self.level)
+            # Use append mode after explicit truncation (simplifies idempotency)
             fh = logging.FileHandler(self.logfile, mode="a", encoding="utf-8")
             fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
             fh.setFormatter(fmt)
