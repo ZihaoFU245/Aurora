@@ -110,18 +110,41 @@ document.addEventListener("DOMContentLoaded", () => {
         const toolMsgs = fullHistory.filter(m => m.type === 'tool');
         if (!toolMsgs.length) { if(toolCallsEmpty) toolCallsEmpty.style.display='block'; return; }
         if(toolCallsEmpty) toolCallsEmpty.style.display='none';
-        toolMsgs.forEach(tm => {
+        toolMsgs.forEach((tm, idx) => {
             const li = document.createElement('li');
             li.className='tool-call-item';
             const meta = toolCallMeta[tm.tool_call_id] || {};
             const name = meta.name || 'tool';
             const args = meta.args ? JSON.stringify(meta.args) : '';
             const result = (tm.content||'').toString();
-            li.innerHTML = `<div class="tool-head"><span class="tool-name">${sanitize(name)}</span><span class="tool-id" title="${tm.tool_call_id||''}">${(tm.tool_call_id||'').slice(0,8)}</span></div>`+
-                           (args?`<div class="tool-args">Args: <code>${sanitize(args)}</code></div>`:'')+
-                           `<div class="tool-result">${sanitize(result)}</div>`;
+            const collapsed = idx < toolMsgs.length - 1; // collapse older, expand newest
+            li.dataset.collapsed = collapsed ? '1':'0';
+            li.innerHTML = `
+                <div class="tool-head" role="button" tabindex="0" aria-expanded="${!collapsed}" aria-label="Toggle tool call details">
+                    <span class="caret" aria-hidden="true">${collapsed?'▶':'▼'}</span>
+                    <span class="tool-name">${sanitize(name)}</span>
+                    <span class="tool-id" title="${tm.tool_call_id||''}">${(tm.tool_call_id||'').slice(0,8)}</span>
+                </div>
+                <div class="tool-body" style="display:${collapsed?'none':'block'};">
+                    ${(args?`<div class="tool-args">Args: <code>${sanitize(args)}</code></div>`:'')}
+                    <div class="tool-result">${sanitize(result)}</div>
+                </div>`;
+            const head = li.querySelector('.tool-head');
+            head.addEventListener('click', () => toggleToolItem(li));
+            head.addEventListener('keydown', (e) => { if (e.key==='Enter' || e.key===' ') { e.preventDefault(); toggleToolItem(li); }});
             toolCallsList.appendChild(li);
         });
+    };
+
+    const toggleToolItem = (li) => {
+        const collapsed = li.dataset.collapsed === '1';
+        li.dataset.collapsed = collapsed ? '0':'1';
+        const body = li.querySelector('.tool-body');
+        const caret = li.querySelector('.caret');
+        if (body) body.style.display = collapsed ? 'block':'none';
+        if (caret) caret.textContent = collapsed ? '▼':'▶';
+        const head = li.querySelector('.tool-head');
+        if (head) head.setAttribute('aria-expanded', collapsed ? 'true':'false');
     };
 
     const sendMessage = async () => {

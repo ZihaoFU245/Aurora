@@ -4,6 +4,7 @@ Web Search tools
 from langchain_core.tools import tool
 
 import asyncio
+import threading
 from dataclasses import dataclass, asdict
 from typing import List, Optional, Set, Tuple
 import re
@@ -173,21 +174,35 @@ class Searcher:
         return text, links
 
 
-# Tools
+#############################
+# Internal async primitives #
+#############################
 
-@tool("ddg_html_search")
-async def ddg_html_search(query: str, max_results: int = 10, country: str = "us-en", site: Optional[str] = None) -> List[dict]:
-    """DuckDuckGo HTML search (no-JS). Return a list of results with rank, title, url, snippet.
+def _run_async(coro):
+    """Run an async coroutine from sync context safely (supports nested event loops)."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # no running loop
+        return asyncio.run(coro)
+    else:
+        # Run in separate thread with dedicated loop to avoid nesting issues
+        container = {}
+        def runner():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                container["result"] = new_loop.run_until_complete(coro)
+            finally:
+                new_loop.close()
+        t = threading.Thread(target=runner, daemon=True)
+        t.start()
+        t.join()
+        return container.get("result")
 
-    Inputs:
-    - query: search keywords
-    - max_results: max number of results to return (default 10)
-    - country: region/language code for DuckDuckGo (e.g., 'us-en')
-    - site: optional site filter, e.g., 'example.com' (will be applied as 'site:example.com')
-    """
+
+async def _ddg_html_search_async(query: str, max_results: int = 10, country: str = "us-en", site: Optional[str] = None) -> List[dict]:
     searcher = Searcher()
     if site:
-        # Append site filter safely
         query = f"{query} site:{site}"
     try:
         results = await searcher.search_duckduckgo(query, max_results=max_results, country=country)
@@ -196,25 +211,13 @@ async def ddg_html_search(query: str, max_results: int = 10, country: str = "us-
     return [asdict(r) for r in results]
 
 
-@tool("ddg_html_search_enrich")
-async def ddg_html_search_enrich(
+async def _ddg_html_search_enrich_async(
     query: str,
     max_results: int = 10,
     country: str = "us-en",
     enrich_limit: int = 5,
     site: Optional[str] = None,
 ) -> List[dict]:
-    """DuckDuckGo HTML search and enrich top results by fetching page metadata.
-
-    Returns a list of results with rank, title, url, snippet, meta_description.
-
-    Inputs:
-    - query: search keywords
-    - max_results: max number of results to return (default 10)
-    - country: region/language code for DuckDuckGo (e.g., 'us-en')
-    - enrich_limit: number of top results to fetch for metadata (default 5)
-    - site: optional site filter, e.g., 'example.com' (will be applied as 'site:example.com')
-    """
     searcher = Searcher()
     if site:
         query = f"{query} site:{site}"
@@ -226,15 +229,7 @@ async def ddg_html_search_enrich(
     return [asdict(r) for r in results]
 
 
-@tool("visit_website")
-async def visit_website(url: str, max_chars: int = 8000, timeout_sec: int = 20) -> dict:
-    """Visit a website URL and extract title, meta description, text content, and links.
-
-    Inputs:
-    - url: absolute URL to visit
-    - max_chars: truncate extracted text to this many characters (default 8000)
-    - timeout_sec: request timeout seconds (default 20)
-    """
+async def _visit_website_async(url: str, max_chars: int = 8000, timeout_sec: int = 20) -> dict:
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"}
     timeout = ClientTimeout(total=timeout_sec)
     try:
@@ -273,8 +268,29 @@ async def visit_website(url: str, max_chars: int = 8000, timeout_sec: int = 20) 
     }
 
 
-@tool("crawl_website")
-async def crawl_website(
+async def _visit_many_async(urls: List[str], max_chars: int = 8000, timeout_sec: int = 20, concurrency: int = 10) -> List[dict]:
+    sem = asyncio.Semaphore(concurrency)
+    headers = {"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"}
+    timeout = ClientTimeout(total=timeout_sec)
+
+    async def one(u: str):
+        async with sem:
+            return await _visit_website_async(u, max_chars=max_chars, timeout_sec=timeout_sec)
+
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:  # session reused by delegated call? _visit_website_async creates its own
+        # For simplicity we just call separate; optimization: refactor to pass session.
+        tasks = [one(u) for u in urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    out: List[dict] = []
+    for r in results:
+        if isinstance(r, dict):
+            out.append(r)
+        else:  # exception
+            out.append({"ok": False, "error": str(r)})
+    return out
+
+
+async def _crawl_website_async(
     start_url: str,
     max_pages: int = 5,
     same_domain: bool = True,
@@ -282,16 +298,6 @@ async def crawl_website(
     max_chars: int = 2000,
     timeout_sec: int = 20,
 ) -> List[dict]:
-    """Crawl a website starting from a URL (small BFS), extracting summary per page.
-
-    Inputs:
-    - start_url: starting absolute URL
-    - max_pages: maximum pages to fetch (default 5)
-    - same_domain: stay within the start domain only (default True)
-    - max_depth: maximum link depth (default 2)
-    - max_chars: truncate each page's text to this length (default 2000)
-    - timeout_sec: request timeout seconds (default 20)
-    """
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"}
     timeout = ClientTimeout(total=timeout_sec)
     start = URL(start_url)
@@ -338,3 +344,56 @@ async def crawl_website(
                     queue.append((link, depth + 1))
 
     return out
+
+#############################
+# Public sync tool wrappers #
+#############################
+
+@tool("ddg_html_search")
+def ddg_html_search(query: str, max_results: int = 10, country: str = "us-en", site: Optional[str] = None) -> List[dict]:
+    """DuckDuckGo HTML search (no-JS). Synchronous wrapper returning list of results."""
+    return _run_async(_ddg_html_search_async(query=query, max_results=max_results, country=country, site=site))
+
+
+@tool("ddg_html_search_enrich")
+def ddg_html_search_enrich(
+    query: str,
+    max_results: int = 10,
+    country: str = "us-en",
+    enrich_limit: int = 5,
+    site: Optional[str] = None,
+) -> List[dict]:
+    """DuckDuckGo HTML search + metadata enrichment. Synchronous wrapper."""
+    return _run_async(_ddg_html_search_enrich_async(query=query, max_results=max_results, country=country, enrich_limit=enrich_limit, site=site))
+
+
+@tool("visit_website")
+def visit_website(url: str, max_chars: int = 8000, timeout_sec: int = 20) -> dict:
+    """Visit a website and extract title, description, truncated text, and links. Synchronous wrapper."""
+    return _run_async(_visit_website_async(url=url, max_chars=max_chars, timeout_sec=timeout_sec))
+
+
+@tool("visit_websites_batch")
+def visit_websites_batch(urls: List[str], max_chars: int = 8000, timeout_sec: int = 20, concurrency: int = 10) -> List[dict]:
+    """Visit multiple websites concurrently (async under the hood) and return list of per-site results.
+
+    Inputs:
+    - urls: list of absolute URLs
+    - max_chars: truncate each page's text
+    - timeout_sec: per-request timeout
+    - concurrency: max simultaneous fetches
+    """
+    return _run_async(_visit_many_async(urls=urls, max_chars=max_chars, timeout_sec=timeout_sec, concurrency=concurrency))
+
+
+@tool("crawl_website")
+def crawl_website(
+    start_url: str,
+    max_pages: int = 5,
+    same_domain: bool = True,
+    max_depth: int = 2,
+    max_chars: int = 2000,
+    timeout_sec: int = 20,
+) -> List[dict]:
+    """Crawl a website (BFS) collecting small summaries. Synchronous wrapper over async crawler."""
+    return _run_async(_crawl_website_async(start_url=start_url, max_pages=max_pages, same_domain=same_domain, max_depth=max_depth, max_chars=max_chars, timeout_sec=timeout_sec))

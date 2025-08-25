@@ -198,6 +198,11 @@ body {
 #tool-calls-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:10px; }
 .tool-call-item { background:#f5f5f5; border:1px solid #e2e8f0; border-radius:10px; padding:8px 10px; box-shadow:0 1px 3px rgba(0,0,0,0.05); }
 .tool-call-item .tool-head { display:flex; justify-content:space-between; font-weight:600; font-size:12px; margin-bottom:4px; }
+.tool-call-item .tool-head { cursor:pointer; user-select:none; gap:6px; }
+.tool-call-item .tool-head:focus { outline:2px solid #6366f1; outline-offset:2px; border-radius:4px; }
+.tool-call-item .caret { width:12px; display:inline-block; text-align:center; color:#4f46e5; }
+.tool-call-item[data-collapsed='1'] .tool-head { margin-bottom:0; }
+.tool-call-item[data-collapsed='1'] .tool-body { display:none; }
 .tool-call-item .tool-name { color:#4f46e5; }
 .tool-call-item .tool-id { font-size:10px; color:#6b7280; }
 .tool-call-item .tool-args { font-family:monospace; font-size:11px; margin-bottom:4px; }

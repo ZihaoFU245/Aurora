@@ -17,8 +17,7 @@ from core.engine import Engine
 from CurrentTimeTools.Tools import getCurrentTime
 from WebSearchTools import ddg_html_search, ddg_html_search_enrich, visit_website, crawl_website
 from WriteFileTools import create_file, write_file, replace_in_file, read_file
-from EmailTools import getAll # Use the old MCP server tools
-#from MCPEmailTools import its_friday_tools
+from EmailTools import getAll
 import json, uuid, datetime
 
 app = FastAPI()
