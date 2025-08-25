@@ -224,6 +224,14 @@ async def chat(request: ChatRequest):
     history_len_before = len(history)
     result = engine.run(request.text, history=history)
     updated_history = result.get("messages", [])
+    # Filter out empty AI messages (often tool-call placeholders with no textual content)
+    def _is_empty_ai(m):
+        try:
+            from langchain_core.messages import AIMessage
+            return isinstance(m, AIMessage) and (not str(m.content).strip())
+        except Exception:
+            return False
+    updated_history = [m for m in updated_history if not _is_empty_ai(m)]
     response_text = _last_ai_text(updated_history)
     history_delta_msgs = updated_history[history_len_before:]
 

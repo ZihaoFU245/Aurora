@@ -63,7 +63,21 @@ document.addEventListener("DOMContentLoaded", () => {
         return wrapper;
     };
 
-    const addTyping = () => { removeTyping(); typingEl = document.createElement('div'); typingEl.className='message assistant'; const avatar=document.createElement('div'); avatar.className='avatar typing'; avatar.textContent='…'; const bubble=document.createElement('div'); bubble.className='bubble'; bubble.innerHTML='<span class="typing-dots"></span>'; typingEl.appendChild(avatar); typingEl.appendChild(bubble); chatBox.appendChild(typingEl); scrollToBottom(); };
+    const addTyping = () => {
+        removeTyping();
+        typingEl = document.createElement('div');
+        typingEl.className='message assistant';
+        const avatar=document.createElement('div');
+        avatar.className='avatar typing';
+        avatar.textContent='…';
+        const bubble=document.createElement('div');
+        bubble.className='bubble typing-bubble';
+        bubble.innerHTML='<span class="typing-dots" aria-label="Assistant is typing"></span>';
+        typingEl.appendChild(avatar);
+        typingEl.appendChild(bubble);
+        chatBox.appendChild(typingEl);
+        scrollToBottom();
+    };
     const removeTyping = () => { if (typingEl?.parentElement) typingEl.parentElement.removeChild(typingEl); typingEl=null; };
     const setSending = (s) => { sendBtn.disabled = s; };
     const autosize = () => { userInput.style.height='auto'; const max=parseInt(getComputedStyle(userInput).maxHeight)||160; userInput.style.height=Math.min(userInput.scrollHeight,max)+'px'; };
@@ -71,7 +85,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const renderHistory = () => {
         chatBox.innerHTML='';
         fullHistory.forEach((m,i) => {
+            // Skip system and tool messages entirely in UI
             if (m.type === 'system' || m.type === 'tool') return;
+            // Some AI messages are just tool-call placeholders with no textual content; hide them
+            if (m.type === 'ai' && (!m.content || String(m.content).trim() === '')) return;
             const wrapper = makeMessage(m.type === 'human' ? 'user':'assistant', m.content, m.type === 'ai', i);
             wrapper.dataset.historyIndex = String(i);
         });
