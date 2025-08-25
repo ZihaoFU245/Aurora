@@ -4,6 +4,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const sendBtn = document.getElementById("send-btn");
     const chatListEl = document.getElementById("chat-list");
     const newChatBtn = document.getElementById("new-chat-btn");
+    const toolCallsList = document.getElementById('tool-calls-list');
+    const toolCallsEmpty = document.getElementById('tool-calls-empty');
 
     let currentChatId = null;
     let fullHistory = []; // full serialized history from server
@@ -93,11 +95,41 @@ document.addEventListener("DOMContentLoaded", () => {
             wrapper.dataset.historyIndex = String(i);
         });
         scrollToBottom();
+        renderTools();
+    };
+
+    const renderTools = () => {
+        if (!toolCallsList) return;
+        toolCallsList.innerHTML='';
+        const toolCallMeta = {};
+        fullHistory.forEach(m => {
+            if (m.type === 'ai' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+                m.tool_calls.forEach(tc => { if (tc && tc.id) toolCallMeta[tc.id] = { name: tc.name, args: tc.args }; });
+            }
+        });
+        const toolMsgs = fullHistory.filter(m => m.type === 'tool');
+        if (!toolMsgs.length) { if(toolCallsEmpty) toolCallsEmpty.style.display='block'; return; }
+        if(toolCallsEmpty) toolCallsEmpty.style.display='none';
+        toolMsgs.forEach(tm => {
+            const li = document.createElement('li');
+            li.className='tool-call-item';
+            const meta = toolCallMeta[tm.tool_call_id] || {};
+            const name = meta.name || 'tool';
+            const args = meta.args ? JSON.stringify(meta.args) : '';
+            const result = (tm.content||'').toString();
+            li.innerHTML = `<div class="tool-head"><span class="tool-name">${sanitize(name)}</span><span class="tool-id" title="${tm.tool_call_id||''}">${(tm.tool_call_id||'').slice(0,8)}</span></div>`+
+                           (args?`<div class="tool-args">Args: <code>${sanitize(args)}</code></div>`:'')+
+                           `<div class="tool-result">${sanitize(result)}</div>`;
+            toolCallsList.appendChild(li);
+        });
     };
 
     const sendMessage = async () => {
         const text = (userInput.value||'').trim(); if (!text) return;
-        userInput.value=''; autosize(); setSending(true); addTyping();
+        userInput.value=''; autosize();
+        const tempUser = makeMessage('user', text, false); // optimistic
+        tempUser.classList.add('pending');
+        setSending(true); addTyping();
         try {
             const resp = await fetch('/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text, chat_id: currentChatId }) });
             if (!resp.ok) throw new Error('Network error');

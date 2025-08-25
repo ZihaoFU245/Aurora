@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 
 from core.engine import Engine
 from CurrentTimeTools.Tools import getCurrentTime
@@ -151,6 +151,8 @@ def deserialize_history(history_data: List[Dict[str, Any]]) -> List[AnyMessage]:
             messages.append(HumanMessage(content=content))
         elif msg_type == "ai":
             messages.append(AIMessage(content=content))
+        elif msg_type == "system":
+            messages.append(SystemMessage(content=content))
         # extend for other types if needed
     return messages
 
@@ -228,12 +230,20 @@ async def chat(request: ChatRequest):
     def _is_empty_ai(m):
         try:
             from langchain_core.messages import AIMessage
+            if isinstance(m, AIMessage) and getattr(m, 'tool_calls', None):
+                return False  # keep placeholders that declare tool calls
             return isinstance(m, AIMessage) and (not str(m.content).strip())
         except Exception:
             return False
     updated_history = [m for m in updated_history if not _is_empty_ai(m)]
     response_text = _last_ai_text(updated_history)
     history_delta_msgs = updated_history[history_len_before:]
+    # Robustness: ensure the just-submitted human message is included in delta
+    if not any(isinstance(m, HumanMessage) and str(m.content) == request.text for m in history_delta_msgs):
+        for m in reversed(updated_history):
+            if isinstance(m, HumanMessage) and str(m.content) == request.text:
+                history_delta_msgs = [m] + history_delta_msgs
+                break
 
     # Persist chat
     serialized_full = serialize_history(updated_history)
