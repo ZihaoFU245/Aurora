@@ -96,7 +96,8 @@ CHAT_FILE_SUFFIX = ".json"
 
 
 def _now_iso():
-    return datetime.datetime.utcnow().isoformat() + "Z"
+    # Use timezone-aware UTC to avoid deprecation warnings and ensure correctness
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _chat_path(chat_id: str) -> Path:
@@ -212,6 +213,7 @@ async def truncate_chat(chat_id: str, req: TruncateRequest):
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     # Determine chat
+    existing: Optional[Dict[str, Any]] = None
     if request.chat_id:
         try:
             existing = _load_chat(request.chat_id)
@@ -251,13 +253,13 @@ async def chat(request: ChatRequest):
     serialized_full = serialize_history(updated_history)
     # Derive title from first human message if not set
     first_human = next((m for m in serialized_full if m.get("type") == "human"), None)
-    title = existing.get("title") if request.chat_id and 'existing' in locals() else None
+    title = existing.get("title") if existing else None
     if not title and first_human:
         title = first_human.get("content", "New Chat").strip().splitlines()[0][:40]
     chat_record = {
         "id": chat_id,
         "title": title or "New Chat",
-        "created_at": existing.get("created_at") if request.chat_id and 'existing' in locals() else _now_iso(),
+        "created_at": existing.get("created_at") if existing else _now_iso(),
         "updated_at": _now_iso(),
         "messages": serialized_full,
     }
